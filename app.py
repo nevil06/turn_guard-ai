@@ -45,9 +45,14 @@ ACCIDENT_DURATION = 5.0           # Accident override (seconds)
 # These scale automatically with any resolution.
 # Adjust these values to match your camera view.
 
-WAIT_ZONE = {
+WAIT_ZONE_LEFT = {
     "x1": 0.00, "y1": 0.30,
     "x2": 0.20, "y2": 0.85,
+}
+
+WAIT_ZONE_RIGHT = {
+    "x1": 0.55, "y1": 0.30,
+    "x2": 0.75, "y2": 0.85,
 }
 
 CROSS_ZONE = {
@@ -101,11 +106,12 @@ def point_in_zone(cx, cy, zx1, zy1, zx2, zy2):
 
 def classify_pedestrians(persons, frame_w, frame_h):
     """
-    Classify each detected person into WAITING, CROSSING, or OUTSIDE.
+    Classify each detected person into WAITING (left or right), CROSSING, or OUTSIDE.
 
     Returns: (waiting_count, crossing_count, wait_persons, cross_persons)
     """
-    wz = zone_to_pixels(WAIT_ZONE, frame_w, frame_h)
+    wzl = zone_to_pixels(WAIT_ZONE_LEFT, frame_w, frame_h)
+    wzr = zone_to_pixels(WAIT_ZONE_RIGHT, frame_w, frame_h)
     cz = zone_to_pixels(CROSS_ZONE, frame_w, frame_h)
 
     waiting_count = 0
@@ -121,7 +127,8 @@ def classify_pedestrians(persons, frame_w, frame_h):
         if point_in_zone(cx, cy, cz[0], cz[1], cz[2], cz[3]):
             crossing_count += 1
             cross_persons.append(p)
-        elif point_in_zone(cx, cy, wz[0], wz[1], wz[2], wz[3]):
+        elif point_in_zone(cx, cy, wzl[0], wzl[1], wzl[2], wzl[3]) or \
+             point_in_zone(cx, cy, wzr[0], wzr[1], wzr[2], wzr[3]):
             waiting_count += 1
             wait_persons.append(p)
 
@@ -146,8 +153,8 @@ class MockDetectionGenerator:
         self.ped1 = {"x": w * 0.10, "y": h * 0.50, "vx": 1.6, "vy": -0.2}
         # Ped 2: appears later, starts in WAITING zone
         self.ped2 = {"x": w * 0.08, "y": h * 0.60, "vx": 1.4, "vy": -0.3}
-        # Ped 3: slow walker, stays near crossing edge
-        self.ped3 = {"x": w * 0.15, "y": h * 0.42, "vx": 0.8, "vy": 0.1}
+        # Ped 3: starts in RIGHT WAIT zone, walks left
+        self.ped3 = {"x": w * 0.65, "y": h * 0.45, "vx": -1.2, "vy": 0.1}
 
         # Vehicles
         self.car1 = {"x": w * 0.78, "y": h * 0.85, "vx": -3.0, "vy": -2.5}
@@ -185,7 +192,7 @@ class MockDetectionGenerator:
         # Ped 3 — after frame 25
         if self.frame_num > 25:
             self._move(self.ped3, 0.1, 0.1)
-            self._reset(self.ped3, self.w * 0.15, self.h * 0.42)
+            self._reset(self.ped3, self.w * 0.65, self.h * 0.45)
             px3, py3 = int(self.ped3["x"]), int(self.ped3["y"])
             persons.append((px3 - 15, py3 - 40, px3 + 15, py3 + 40, 0.85))
 
@@ -247,20 +254,29 @@ def draw_zones(frame):
     h, w = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # ── WAITING ZONE (blue) ───────────────────────────────────────
-    wz = zone_to_pixels(WAIT_ZONE, w, h)
+    # ── WAITING ZONE LEFT (blue) ──────────────────────────────────
+    wzl = zone_to_pixels(WAIT_ZONE_LEFT, w, h)
     ov = frame.copy()
-    cv2.rectangle(ov, (wz[0], wz[1]), (wz[2], wz[3]), COL_BLUE, -1)
+    cv2.rectangle(ov, (wzl[0], wzl[1]), (wzl[2], wzl[3]), COL_BLUE, -1)
     cv2.addWeighted(ov, 0.15, frame, 0.85, 0, frame)
-    cv2.rectangle(frame, (wz[0], wz[1]), (wz[2], wz[3]), COL_BLUE, 2)
-    cv2.putText(frame, "WAIT ZONE", (wz[0] + 5, wz[1] - 8),
+    cv2.rectangle(frame, (wzl[0], wzl[1]), (wzl[2], wzl[3]), COL_BLUE, 2)
+    cv2.putText(frame, "WAIT LEFT", (wzl[0] + 5, wzl[1] - 8),
+                font, 0.55, COL_BLUE, 2)
+
+    # ── WAITING ZONE RIGHT (blue) ─────────────────────────────────
+    wzr = zone_to_pixels(WAIT_ZONE_RIGHT, w, h)
+    ov2 = frame.copy()
+    cv2.rectangle(ov2, (wzr[0], wzr[1]), (wzr[2], wzr[3]), COL_BLUE, -1)
+    cv2.addWeighted(ov2, 0.15, frame, 0.85, 0, frame)
+    cv2.rectangle(frame, (wzr[0], wzr[1]), (wzr[2], wzr[3]), COL_BLUE, 2)
+    cv2.putText(frame, "WAIT RIGHT", (wzr[0] + 5, wzr[1] - 8),
                 font, 0.55, COL_BLUE, 2)
 
     # ── CROSSING ZONE (red) ──────────────────────────────────────
     cz = zone_to_pixels(CROSS_ZONE, w, h)
-    ov = frame.copy()
-    cv2.rectangle(ov, (cz[0], cz[1]), (cz[2], cz[3]), COL_ZONE_R, -1)
-    cv2.addWeighted(ov, 0.15, frame, 0.85, 0, frame)
+    ov3 = frame.copy()
+    cv2.rectangle(ov3, (cz[0], cz[1]), (cz[2], cz[3]), COL_ZONE_R, -1)
+    cv2.addWeighted(ov3, 0.15, frame, 0.85, 0, frame)
     cv2.rectangle(frame, (cz[0], cz[1]), (cz[2], cz[3]), COL_ZONE_R, 2)
     cv2.putText(frame, "CROSS ZONE", (cz[0] + 5, cz[1] - 8),
                 font, 0.55, COL_ZONE_R, 2)

@@ -1,6 +1,6 @@
 # 🛡️ SafeTurn AI
 
-**Predictive Free-Left Turn Safety System**
+**Intelligent Free-Left Turn Traffic Signal Controller**
 
 > *"Predictive, not reactive — we act before danger arrives."*
 
@@ -10,41 +10,44 @@ Built for **HackSETU 2025** | Theme 3: Intelligent Free-Left Turn Management for
 
 ## 💡 What It Does
 
-SafeTurn AI watches a junction camera feed and **predicts pedestrian-vehicle collisions 3 seconds before they happen**. When a free-left turning vehicle is on a path to intersect with a crossing pedestrian, the system fires a **HOLD** signal to restrict the turn — *before anyone is in danger*.
+SafeTurn AI uses a camera feed with **YOLOv8 real-time object detection** to count pedestrians at a junction and **dynamically control traffic signals** for free-left turns. The system implements a realistic 3-stage signal (🟢 GREEN → 🟡 ORANGE → 🔴 RED) with stability logic to prevent flickering.
 
 ```
-    ┌─────────────────────────────────────────────┐
-    │            SafeTurn AI Pipeline              │
-    │                                              │
-    │  CCTV Feed                                   │
-    │     │                                        │
-    │     ▼                                        │
-    │  YOLOv8 Detection (pedestrians, vehicles)    │
-    │     │                                        │
-    │     ▼                                        │
-    │  Centroid Tracking (persistent object IDs)   │
-    │     │                                        │
-    │     ▼                                        │
-    │  Trajectory Prediction (3-second lookahead)  │
-    │     │                                        │
-    │     ▼                                        │
-    │  Conflict Engine (collision probability)     │
-    │     │                                        │
-    │     ▼                                        │
-    │  Decision: 🟢 ALLOW │ 🟡 CAUTION │ 🔴 HOLD  │
-    └─────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────┐
+    │           SafeTurn AI Pipeline                │
+    │                                               │
+    │  Camera Feed (video or webcam)                │
+    │     │                                         │
+    │     ▼                                         │
+    │  YOLOv8n Detection (person, car, bike, bus)   │
+    │     │                                         │
+    │     ▼                                         │
+    │  Pedestrian Count                             │
+    │     │                                         │
+    │     ▼                                         │
+    │  3-Stage Signal Controller                    │
+    │     │                                         │
+    │     ▼                                         │
+    │  Decision: 🟢 GREEN │ 🟡 ORANGE │ 🔴 RED     │
+    └──────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🧠 Key Innovation
+## 🚦 Signal Logic
 
-| Feature | SafeTurn AI | Traditional Systems |
-|---------|-------------|-------------------|
-| Approach | **Predictive** — acts 3s before collision | Reactive — responds after detection |
-| Tracking | Persistent object IDs + velocity history | Frame-by-frame, no memory |
-| Decision | Probability-based (0-100%) | Binary signal timers |
-| Hardware | Existing CCTV — **₹6,000/junction** | New sensors needed |
+| Pedestrians | Action |
+|-------------|--------|
+| **0** | 🟢 Stay GREEN — free turn |
+| **1** | Wait 5 seconds, then 🟡 ORANGE → 🔴 RED |
+| **2+** | Immediately 🟡 ORANGE → 🔴 RED |
+
+### Transition Rules
+
+- GREEN → ORANGE → RED *(never skips a stage)*
+- 🟡 ORANGE duration = **2 seconds** (warning)
+- 🔴 RED minimum = **3 seconds**
+- RED → GREEN only when **0 pedestrians** detected
 
 ---
 
@@ -56,16 +59,17 @@ SafeTurn AI watches a junction camera feed and **predicts pedestrian-vehicle col
 pip install -r requirements.txt
 ```
 
-### 2. Run with a Video
+### 2. Run the System
 
 ```bash
-python safeturn_phase1.py --video traffic.mp4
-```
+# Single camera — one video with pedestrians + vehicles
+python app.py --mode single --video test4vedio.mp4
 
-### 3. Run in Demo Mode (No Video Needed)
+# Single camera — webcam
+python app.py --mode single --camera 0
 
-```bash
-python safeturn_phase1.py --mock
+# Dual camera — webcam (pedestrians) + video (traffic)
+python app.py --mode dual --video test4vedio.mp4
 ```
 
 ### Controls
@@ -74,77 +78,82 @@ python safeturn_phase1.py --mock
 |-----|--------|
 | `Q` | Quit |
 | `S` | Save screenshot |
+| `R` | Rewind video (single mode) |
+| `A` | Simulate accident |
 
 ---
 
-## 🚨 Extended Features (Post-Accident Response)
+## 🏗️ Architecture (Modular)
 
-When an accident IS detected (overlap + speed drop):
+```
+app.py                    ← Main entry point (--mode single / dual)
+├── detection.py          ← YOLOv8 wrapper with frame resize optimization
+├── signal_controller.py  ← 3-stage state machine (GREEN → ORANGE → RED)
+│
+├── Single Mode           ← One camera: detects persons + vehicles
+└── Dual Mode             ← Webcam (pedestrians) + Video (traffic view)
+```
+
+### Other Files
+
+```
+safeturn_final.py         ← Legacy complete system (predictive engine)
+safeturn_main.py          ← Legacy single-camera with zone detection
+step2_dual_camera.py      ← Standalone single-camera version
+dashboard.py              ← Streamlit monitoring dashboard
+```
+
+---
+
+## ⚡ Performance Optimizations
+
+| Optimization | Details |
+|-------------|---------|
+| **Frame skipping** | YOLO runs every 2nd frame, cached results reused |
+| **Frame resize** | Input resized to 640×360 before inference |
+| **YOLO imgsz** | Internal YOLO size set to 480px (vs default 640) |
+| **YOLOv8n** | Nano model — fastest, optimized for CPU |
+| **cv2.waitKey(1)** | Zero display delay for smooth playback |
+
+---
+
+## 🎯 Detection & Visualization
+
+**Detected classes** with color-coded bounding boxes:
+
+| Class | Color | COCO ID |
+|-------|-------|---------|
+| person | 🟢 Green | 0 |
+| car | 🔴 Red | 2 |
+| bicycle / motorbike | 🟠 Orange | 1, 3 |
+| bus | 🩷 Pink | 5 |
+| truck | 🫧 Teal | 7 |
+
+Each detection shows: **class name + confidence** (e.g., `person 85%`)
+
+---
+
+## 🚨 Accident Simulation
+
+Press **A** during the demo to trigger:
 
 | Feature | What Happens |
 |---------|-------------|
-| 🚧 Accident Detection | Bounding box overlap + speed drop = collision |
-| 🔴 Traffic Control | ALL SIGNALS RED displayed immediately |
-| ⚡ Severity Estimation | HIGH / MEDIUM / LOW based on speed + overlap |
+| 🔴 Signal Override | Immediate RED for 5 seconds |
 | 🚑 Ambulance Alert | "Ambulance Alert Triggered" displayed |
-| 👥 Crowd Density | Pedestrian count → LOW / MEDIUM / HIGH |
-
-Press **A** during the demo to simulate an accident!
+| ⚠️ Visual | Flashing red border + center banner |
 
 ---
 
-## ⚙️ How the Prediction Works
+## 🛠️ Tech Stack
 
-1. **Detect** objects using YOLOv8 nano (optimized for CPU)
-2. **Track** each object across frames with unique IDs
-3. **Record** last 5 positions to compute velocity vectors
-4. **Extrapolate** each trajectory 3 seconds into the future
-5. **Compute conflict probability** for every pedestrian-vehicle pair:
-   - Distance between predicted positions (60% weight)
-   - Closing speed between objects (25% weight)
-   - Trajectory convergence angle (15% weight)
-6. **Fire decision**:
-   - `> 70%` → 🔴 **HOLD** — restrict the turn
-   - `> 40%` → 🟡 **CAUTION** — warn
-   - `≤ 40%` → 🟢 **ALLOW** — safe to proceed
-
----
-
-## 🏗️ Architecture
-
-```
-safeturn_final.py           ← COMPLETE SYSTEM (recommended for demo)
-├── CentroidTracker         ← Object tracking (centroid matching)
-├── predict_position()      ← Linear extrapolation from velocity
-├── compute_conflict_probability()  ← Multi-factor risk scoring
-├── get_decision()          ← Threshold-based HOLD/CAUTION/ALLOW
-├── AccidentDetector        ← Post-accident detection + severity
-├── get_crowd_density()     ← Pedestrian count + density level
-├── draw_overlay()          ← Full OpenCV visualization + accident alerts
-├── MockDetectionGenerator  ← Synthetic demo mode
-└── run_yolo()              ← YOLOv8 wrapper with class filtering
-
-safeturn_phase1.py          ← Core-only standalone
-safeturn_phase2.py          ← Enhanced tracking (DeepSORT)
-dashboard.py                ← Streamlit dashboard
-```
-
----
-
-## 📊 Decision Thresholds
-
-```
-0%                     40%                    70%                  100%
-├─────────────────────┼──────────────────────┼─────────────────────┤
-│    🟢 ALLOW         │    🟡 CAUTION        │    🔴 HOLD          │
-│    Safe to turn     │    Warn driver       │    Restrict turn    │
-└─────────────────────┴──────────────────────┴─────────────────────┘
-```
+- **Python** — core language
+- **OpenCV** — video processing + UI overlays
+- **YOLOv8** (ultralytics) — real-time object detection
+- **NumPy** — array operations
 
 ---
 
 ## 👥 Team
 
-Built at **HackSETU 2025** 
-
-
+Built at **HackSETU 2025**

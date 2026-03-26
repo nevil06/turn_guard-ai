@@ -120,7 +120,68 @@ class SignalController:
                 return "RED", COL_RED, 0.0, \
                     f"{total_peds} pedestrian(s) — holding RED"
 
-        # Fallback
+        return self.state, COL_GREEN, 0.0, ""
+
+    def _go(self, new_state, now):
+        self.state       = new_state
+        self.state_start = now
+
+
+class SimpleSignalController:
+    """
+    Simplified signal controller based purely on total pedestrian count.
+    Used by dual camera mode without spatial zones.
+
+    0 peds: GREEN
+    1 ped: Wait 5s, then ORANGE(2s) -> RED
+    2+ peds: Immediate ORANGE(2s) -> RED
+    """
+    def __init__(self):
+        self.state            = "GREEN"
+        self.state_start      = time.time()
+        self.waiting_since    = None
+
+    def update(self, ped_count):
+        now = time.time()
+        elapsed = now - self.state_start
+
+        if self.state == "GREEN":
+            if ped_count == 0:
+                self.waiting_since = None
+                return "GREEN", COL_GREEN, 0.0, "No pedestrians"
+            
+            elif ped_count >= 2:
+                self.waiting_since = None
+                self._go("ORANGE", now)
+                return "ORANGE", COL_ORANGE, ORANGE_DURATION, f"{ped_count} pedestrians — WARNING"
+                
+            elif ped_count == 1:
+                if self.waiting_since is None:
+                    self.waiting_since = now
+                waited = now - self.waiting_since
+                if waited >= 5.0:
+                    self.waiting_since = None
+                    self._go("ORANGE", now)
+                    return "ORANGE", COL_ORANGE, ORANGE_DURATION, "1 pedestrian — WARNING"
+                else:
+                    return "GREEN", COL_GREEN, 5.0 - waited, f"1 pedestrian — watching ({5.0 - waited:.1f}s)"
+
+        elif self.state == "ORANGE":
+            if elapsed < ORANGE_DURATION:
+                return "ORANGE", COL_ORANGE, ORANGE_DURATION - elapsed, "Prepare to stop"
+            else:
+                self._go("RED", now)
+                return "RED", COL_RED, RED_MIN_DURATION, "STOP — pedestrians"
+
+        elif self.state == "RED":
+            if elapsed < RED_MIN_DURATION:
+                return "RED", COL_RED, RED_MIN_DURATION - elapsed, "STOP — pedestrians"
+            if ped_count == 0:
+                self._go("GREEN", now)
+                return "GREEN", COL_GREEN, 0.0, "No pedestrians"
+            else:
+                return "RED", COL_RED, 0.0, f"{ped_count} pedestrian(s) — holding RED"
+
         return self.state, COL_GREEN, 0.0, ""
 
     def _go(self, new_state, now):

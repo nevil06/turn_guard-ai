@@ -31,7 +31,7 @@ except ImportError:
     print("[FATAL] OpenCV not found.  Fix: pip install opencv-python")
     sys.exit(1)
 
-from signal_controller import SignalController, COL_RED, COL_GREEN, COL_ORANGE
+from signal_controller import SignalController, SimpleSignalController, COL_RED, COL_GREEN, COL_ORANGE
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -442,6 +442,62 @@ def draw_overlay(frame, waiting_count, crossing_count, sig_state, sig_color,
     return frame
 
 
+def draw_traffic_overlay(frame, sig_state, sig_color, remaining, fps, mode_label, accident_active=False):
+    """Draw the traffic camera HUD overlay (No pedestrian zone data)."""
+    h, w = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    # ── Top banner ────────────────────────────────────────────────
+    banner_h = 60
+    ov = frame.copy()
+    cv2.rectangle(ov, (0, 0), (w, banner_h), sig_color, -1)
+    cv2.addWeighted(ov, 0.6, frame, 0.4, 0, frame)
+
+    cv2.putText(frame, f"Signal: {sig_state}", (12, 42),
+                font, 1.2, COL_WHITE, 3)
+
+    if remaining > 0:
+        cv2.putText(frame, f"{remaining:.1f}s", (w - 160, 42),
+                    font, 1.0, COL_WHITE, 2)
+
+    # ── Signal light ──────────────────────────────────────────────
+    draw_signal_light(frame, sig_state)
+
+    # ── Center signal ─────────────────────────────────────────────
+    if not accident_active:
+        draw_center_signal(frame, sig_state, sig_color, remaining)
+        
+    # ── Accident overlay ──────────────────────────────────────────
+    if accident_active:
+        flash = int(time.time() * 3) % 2 == 0
+        if flash:
+            cv2.rectangle(frame, (0, 0), (w - 1, h - 1), COL_RED, 6)
+
+        bx, by = w // 2, h // 2
+        ov2 = frame.copy()
+        cv2.rectangle(ov2, (bx - 220, by - 60), (bx + 220, by + 75),
+                      (0, 0, 120), -1)
+        cv2.addWeighted(ov2, 0.8, frame, 0.2, 0, frame)
+
+        cv2.putText(frame, "ACCIDENT DETECTED", (bx - 185, by - 18),
+                    font, 1.1, COL_WHITE, 3)
+        cv2.putText(frame, "ALL SIGNALS RED", (bx - 120, by + 18),
+                    font, 0.8, COL_RED, 2)
+        cv2.putText(frame, "Ambulance Alert Triggered",
+                    (bx - 165, by + 55), font, 0.65, COL_CYAN, 2)
+
+    # ── Bottom bar ────────────────────────────────────────────────
+    cv2.rectangle(frame, (0, h - 35), (w, h), (20, 20, 20), -1)
+    cv2.putText(frame, "Q=Quit  S=Screenshot  A=Accident",
+                (8, h - 12), font, 0.42, COL_GRAY, 1)
+    cv2.putText(frame, f"FPS: {fps:.0f}  |  {mode_label}",
+                (w - 260, h - 12), font, 0.42, COL_GRAY, 1)
+    cv2.putText(frame, "SafeTurn AI | HackSETU 2025",
+                (w - 260, h - 40), font, 0.45, COL_CYAN, 1)
+
+    return frame
+
+
 # ═══════════════════════════════════════════════════════════════════
 # MOCK MODE
 # ═══════════════════════════════════════════════════════════════════
@@ -647,7 +703,7 @@ def run_single(args, detector):
 # ═══════════════════════════════════════════════════════════════════
 
 def run_dual(args, detector):
-    """Two cameras with zone-based detection."""
+    """Two cameras with simplified count-based detection."""
     cam_idx = args.camera if args.camera is not None else 0
     ped_cap = cv2.VideoCapture(cam_idx)
     if not ped_cap.isOpened():
@@ -664,16 +720,20 @@ def run_dual(args, detector):
         sys.exit(1)
     print(f"[INFO] Traffic video: {args.video}")
 
-    signal      = SignalController()
+    signal      = SimpleSignalController()
     frame_count = 0
     fps         = 30.0
     last_persons = []
+    last_vehicles = []
+    
+    accident_active = False
+    accident_start  = 0.0
 
     print()
     print("=" * 55)
-    print("  SafeTurn AI — DUAL CAMERA MODE (Zone-Based)")
+    print("  SafeTurn AI — DUAL CAMERA MODE (Count-Based)")
     print("  🟢 GREEN → 🟡 ORANGE → 🔴 RED")
-    print("  Q = Quit | S = Screenshot")
+    print("  Q = Quit | S = Screenshot | A = Accident")
     print("=" * 55)
     print()
 
@@ -694,39 +754,61 @@ def run_dual(args, detector):
         frame_count += 1
         ph, pw = ped_frame.shape[:2]
 
-        if frame_count % PROCESS_EVERY == 0 and ret1:
-            last_persons = detector.detect_persons_only(ped_frame)
+        if frame_count % PROCESS_EVERY == 1:
+            if ret1:
+                last_persons = detector.detect_persons_only(ped_frame)
+            if ret2:
+                # Bypass StableDetector's history, use raw Detector for vehicles
+                _, last_vehicles = detector.detector.detect(traf_frame)
 
-        waiting, crossing, wait_p, cross_p = classify_pedestrians(
-            last_persons, pw, ph)
+        # Basic signal logic with stable pedestrian count (no zones)
+        ped_count = detector.get_stable_ped_count()
 
-        sig_state, sig_color, remaining, status_text = signal.update(waiting, crossing)
+        # ── Accident override ─────────────────────────────────────
+        if accident_active:
+            elapsed_acc = time.time() - accident_start
+            if elapsed_acc >= ACCIDENT_DURATION:
+                accident_active = False
+            else:
+                ped_count = max(ped_count, 2)  # Force RED logic
+
+        sig_state, sig_color, remaining, status_text = signal.update(ped_count)
+        
+        if accident_active:
+            sig_state = "RED"
+            sig_color = COL_RED
+            remaining = ACCIDENT_DURATION - (time.time() - accident_start)
+            status_text = "ACCIDENT — ALL STOP"
 
         now = time.time()
         dt = max(now - frame_start, 1e-6)
         fps = 0.9 * fps + 0.1 * (1.0 / dt)
 
-        draw_zones(ped_frame)
-        draw_detections(ped_frame, last_persons, None, wait_p, cross_p)
+        # Draw bounding boxes only (zones removed entirely)
+        draw_detections(ped_frame, last_persons, None, None, None)
 
         # Ped cam overlay
         ph2, pw2 = ped_frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
         banner_h = 55
         ov = ped_frame.copy()
-        total_p = waiting + crossing
-        banner_c = COL_GREEN if total_p == 0 else COL_ORANGE if total_p <= 2 else COL_RED
+        banner_c = COL_GREEN if ped_count == 0 else COL_ORANGE if ped_count == 1 else COL_RED
+        if accident_active: banner_c = COL_RED
         cv2.rectangle(ov, (0, 0), (pw2, banner_h), banner_c, -1)
         cv2.addWeighted(ov, 0.6, ped_frame, 0.4, 0, ped_frame)
-        cv2.putText(ped_frame, f"Wait: {waiting}  Cross: {crossing}",
+        cv2.putText(ped_frame, f"Pedestrian Count: {ped_count}",
                     (12, 38), font, 0.8, COL_WHITE, 2)
-        cv2.putText(ped_frame, f"Signal: {sig_state}", (12, banner_h + 25),
+        cv2.putText(ped_frame, f"Signal: {sig_state} | {status_text}", (12, banner_h + 25),
                     font, 0.6, sig_color, 2)
-        draw_center_signal(ped_frame, sig_state, sig_color, 0)
+        
+        if accident_active:
+            cv2.putText(ped_frame, "ACCIDENT OVERRIDE", (pw2 // 2 - 120, ph2 - 40), font, 0.8, COL_RED, 2)
 
-        traf_frame = draw_overlay(traf_frame, waiting, crossing, sig_state,
-                                   sig_color, remaining, status_text,
-                                   fps, "DUAL CAM")
+        # Traffic Camera Visualization
+        draw_detections(traf_frame, [], last_vehicles, [], [])
+        traf_frame = draw_traffic_overlay(traf_frame, sig_state,
+                                   sig_color, remaining,
+                                   fps, "DUAL CAM", accident_active)
 
         cv2.imshow("Pedestrian Camera", ped_frame)
         cv2.imshow("Traffic View", traf_frame)
@@ -739,6 +821,11 @@ def run_dual(args, detector):
             cv2.imwrite(f"ped_cam_{ts}.png", ped_frame)
             cv2.imwrite(f"traffic_{ts}.png", traf_frame)
             print(f"[SAVED] ped_cam_{ts}.png, traffic_{ts}.png")
+        elif key == ord('a') or key == ord('A'):
+            if not accident_active:
+                accident_active = True
+                accident_start = time.time()
+                print(f"[ALERT] Accident simulated! RED for {ACCIDENT_DURATION:.0f}s")
 
     ped_cap.release()
     traf_cap.release()
